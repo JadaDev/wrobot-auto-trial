@@ -120,3 +120,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Disclaimer
 
 This software is provided "as is" without warranty of any kind. Use at your own risk.
+
+## JadaDev Modifications : 
+
+Easily Run the `Install_Run.bat` And it will do the whole job.
+Added Detection for the Checking.
