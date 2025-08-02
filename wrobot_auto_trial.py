@@ -2,13 +2,43 @@ import subprocess
 import os
 import time
 import threading
-
 import psutil
 import win32gui
 import pywinauto
 from pywinauto.application import Application
+import re
+import sys
+import ctypes
 
 WROBOT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WRobot.exe")
+
+def is_admin():
+    """Check if the script is running with administrator privileges."""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+def run_as_admin():
+    """Restart the script with administrator privileges."""
+    if is_admin():
+        return True
+    else:
+        print("Requesting administrator privileges...")
+        try:
+            # Re-run the program with admin rights
+            ctypes.windll.shell32.ShellExecuteW(
+                None, 
+                "runas", 
+                sys.executable, 
+                " ".join(sys.argv), 
+                None, 
+                1
+            )
+            return False
+        except Exception as e:
+            print(f"Failed to restart with admin privileges: {e}")
+            return False
 
 def find_process_by_name(process_name):
     for proc in psutil.process_iter(['pid', 'name']):
@@ -17,6 +47,18 @@ def find_process_by_name(process_name):
     return None
 
 def main():
+    # Check for admin privileges at startup
+    if not is_admin():
+        print("This script requires administrator privileges to function properly.")
+        if run_as_admin():
+            return  # Exit current instance, admin version will start
+        else:
+            print("Failed to obtain administrator privileges. Exiting...")
+            input("Press Enter to exit...")
+            return
+    
+    print("Running with administrator privileges.")
+    
     process_name = "WRobot.exe"
     while True:
         wrobot_process = find_process_by_name(process_name)
@@ -24,7 +66,8 @@ def main():
         if not wrobot_process:
             print(f"Process '{process_name}' not found. Starting it from: {WROBOT_PATH}")
             try:
-                subprocess.Popen([WROBOT_PATH])
+                # Start WRobot with elevated privileges
+                subprocess.Popen([WROBOT_PATH], shell=True)
                 time.sleep(5)
                 wrobot_process = find_process_by_name(process_name)
                 if not wrobot_process:
@@ -57,99 +100,102 @@ def main():
                         print(f"Could not find or click button with auto_id '{automation_id}'. Error: {e}")
 
                 print("Waiting for server connection to be established...")
-                try:
-                    start_time = time.time()
-                    timeout = 120
-                    check_interval = 1.0
-                    def check_launch_bot_ready():
-                        try:
-                            button = main_window.child_window(auto_id="buttonLaunchBot", control_type="Button")
-                            if button.exists(): return button.is_enabled()
-                            return False
-                        except Exception: return False
-                    button_ready = False
-                    while time.time() - start_time < timeout:
-                        if check_launch_bot_ready():
-                            button_ready = True
-                            break
-                        time.sleep(check_interval)
-                    if button_ready:
+                start_time = time.time()
+                timeout = 120
+
+                def check_launch_bot_ready():
+                    try:
+                        button = main_window.child_window(auto_id="buttonLaunchBot", control_type="Button")
+                        return button.exists() and button.is_enabled()
+                    except Exception:
+                        return False
+
+                while time.time() - start_time < timeout:
+                    if check_launch_bot_ready():
                         print("Server connection established! Button is now enabled.")
                         click_button_by_id("buttonLaunchBot")
-                    else:
-                        print("Timeout waiting for server connection to be established.")
-                        continue
-                except Exception as e:
-                    print(f"An error occurred while waiting for server connection. Error: {e}")
+                        break
+                    time.sleep(1)
+                else:
+                    print("Timeout waiting for server connection to be established.")
                     continue
 
+                print("Waiting for 'License Keys Management' window...")
+                license_window = app.window(title="License Keys Management")
+                license_window.wait('visible', timeout=30)
+                print("Found 'License Keys Management' window.")
+                login_button = license_window.child_window(auto_id="buttonLogin", control_type="Button")
+                login_button.wait('visible', timeout=10)
+                threading.Thread(target=login_button.click).start()
+                print("Click on 'buttonLogin' (LOGIN) initiated in a separate thread.")
+
+                print("Waiting for captcha window to appear...")
+                time.sleep(1)
                 try:
-                    print("Waiting for 'License Keys Management' window...")
-                    license_window = app.window(title="License Keys Management")
-                    license_window.wait('visible', timeout=30)
-                    print("Found 'License Keys Management' window.")
-                    login_button = license_window.child_window(auto_id="buttonLogin", control_type="Button")
-                    login_button.wait('visible', timeout=10)
-                    threading.Thread(target=lambda: login_button.click()).start()
-                    print("Click on 'buttonLogin' (LOGIN) initiated in a separate thread.")
+                    windows_found = pywinauto.findwindows.find_windows(title_re=".*MessageBox.*")
+                    for hwnd in windows_found:
+                        try:
+                            win32gui.PostMessage(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+                        except: pass
+                except: pass
+                print("Captcha window handling complete.")
 
+                print("Waiting for final WRobot window to appear...")
+                time.sleep(3)
+
+                final_window = None
+                for window in app.windows():
                     try:
-                        print("Waiting for captcha window to appear...")
-                        time.sleep(1)
-                        windows_found = pywinauto.findwindows.find_windows(title_re=".*MessageBox.*")
-                        if windows_found:
-                            print(f"Found {len(windows_found)} MessageBox windows")
-                            for hwnd in windows_found:
-                                try:
-                                    window_title = win32gui.GetWindowText(hwnd)
-                                    print(f"Closing window: '{window_title}' (HWND: {hwnd})")
-                                    win32gui.PostMessage(hwnd, 0x0010, 0, 0)
-                                    print("Sent WM_CLOSE message to captcha window!")
-                                except Exception as e: print(f"Error closing window {hwnd}: {e}")
-                        else: print("No MessageBox windows found to close")
-                        print("Captcha window handling complete!")
-                    except Exception as e: print(f"An error occurred while handling the captcha window. Error: {e}")
-                    
-                    try:
-                        print("Waiting for final WRobot window to appear...")
-                        time.sleep(3)
+                        if "License" not in window.window_text() and window.is_visible():
+                            final_window = window
+                            break
+                    except: continue
 
-                        print("Looking for final window...")
+                if not final_window:
+                    final_window = app.top_window()
 
-                        final_window = None
-                        for window in app.windows():
-                            try:
-                                win_text = window.window_text()
-                                if "License" not in win_text and window.is_visible():
-                                    final_window = window
-                                    break
-                            except Exception:
-                                continue
+                if final_window:
+                    print(f"Found final window: '{final_window.window_text()}'")
+                    final_window.set_focus()
 
-                        if not final_window:
-                            print("Could not find a new window by iterating, trying app.top_window()...")
-                            final_window = app.top_window()
+                    if final_window.window_text() == "MessageBoxTrialVersion":
+                        print("Detected trial message window with math equation.")
+                        try:
+                            trial_window = app.window(title="MessageBoxTrialVersion")
+                            static_controls = trial_window.children(control_type="Text")
+                            math_text = next((ctrl.window_text() for ctrl in static_controls if "+" in ctrl.window_text()), None)
 
-                        if final_window:
-                            print(f"Found final window: '{final_window.window_text()}'")
-                            final_window.set_focus()
-                            
-                            print("Sending key combination 'Alt+C'...")
-                            
-                            final_window.type_keys("%c") 
-                            
-                            print("Key combination 'Alt+C' sent successfully!")
-                        else:
-                            print("All methods to find the final window have failed.")
+                            if math_text:
+                                match = re.search(r"(\d+)\s*\+\s*(\d+)", math_text)
+                                if match:
+                                    result = str(int(match.group(1)) + int(match.group(2)))
 
-                    except Exception as e:
-                        print(f"An error occurred while finding the window or sending keys. Error: {e}")
+                                    input_field = trial_window.child_window(control_type="Edit")
+                                    input_field.wait('visible', timeout=5)
+                                    input_field.set_edit_text(result)
+                                    print("Entered result into input field.")
+                                    time.sleep(0.5)
 
-                except Exception as e:
-                    print(f"An error occurred while handling the license window. Error: {e}")
+                                    try:
+                                        ok_button = trial_window.child_window(title="OK", control_type="Button")
+                                        ok_button.wait('enabled', timeout=5)
+                                        ok_button.click_input()
+                                        print("Clicked OK button.")
+                                    except Exception as e:
+                                        print(f"Could not click OK: {e}")
+                                else:
+                                    print("Could not parse numbers from equation.")
+                        except Exception as e:
+                            print(f"An error occurred while solving the math captcha: {e}")
+                    else:
+                        print("Sending key combination 'Alt+C'...")
+                        final_window.type_keys("%c")  # Alt+C
+                        print("Key combination 'Alt+C' sent successfully.")
+                else:
+                    print("Final window not found.")
 
             except Exception as e:
-                print(f"An error occurred: {e}")
+                print(f"An error occurred during automation: {e}")
         else:
             print(f"'{process_name}' is running. Checking again in 5 seconds.")
 
